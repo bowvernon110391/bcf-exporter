@@ -1,4 +1,6 @@
 import bpy
+import array
+import sys
 
 """
 Author: Bowie
@@ -26,26 +28,33 @@ VTF_TWEEN   = (1<<7)
 
 VTF_DEFAULT = VTF_POS | VTF_NORMAL | VTF_UV0
 
+# helper to make binary buffer
+def make_buffer(format, data):
+    buf = array.array(format, data)
+    if sys.byteorder != 'little':
+        buf.byteswap()
+    return buf
+
+# compute bytes per vertex
+def bytesPerVertex(vtx_format):
+    totalSize = 0
+    if vtx_format & VTF_POS: totalSize += 12
+    if vtx_format & VTF_NORMAL: totalSize += 12
+    if vtx_format & VTF_UV0: totalSize += 8
+    if vtx_format & VTF_TANGENT_BITANGENT: totalSize += 24
+    if vtx_format & VTF_UV1: totalSize += 8
+    if vtx_format & VTF_COLOR: totalSize += 12
+    if vtx_format & VTF_BONE_DATA: totalSize += 20
+
+    return totalSize
+##
+
 ###
 # buildBuffers: return tuple of vb and ib
 def buildBuffers(obj, report=None, format=VTF_DEFAULT):
     
     # mesh
     m = obj.data
-    
-    # make sure it's a mesh
-    if type(m) != bpy.types.Mesh:
-        print("OBJECT DATA IS NOT MESH!")
-        if report != None:
-            report({'ERROR'}, "Object data is not a <Mesh>!")
-        return (None, None)
-    
-    # make sure it has 1 uv map
-    if (len(m.uv_layers) < 1):
-        print("NO UV MAP FOUND!")
-        if report != None:
-            report({'ERROR'}, "AT LEAST 1 UV MAP MUST BE CREATED!")
-        return (None, None)
     
     # start
     print("BCF_START_BUILDING_BUFFERS...\n")
@@ -93,7 +102,6 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
     # real_tris = []
     # allocate submeshes data
     submeshes_data = []
-    material_names = []
     for i in range(submeshes_count):
         submeshes_data.append({
             "material": m.materials[i].name,
@@ -112,24 +120,53 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
             loop_id = t.loops[i]
             # get loop data
             vtx = mls[loop_id]
-            
-            # grab vertex data
-            pos = verts[vtx.vertex_index].co
-            normal = vtx.normal
-            uv = uv0_data[loop_id].uv
 
             # Transform by -90 along x axis
             # to conform to opengl standard
             # [x y z] => [x -z y]
             
             # build vertex data as flat array
-            vdata = [
-                [pos.x, -pos.z, pos.y],
-                [normal.x, -normal.z, normal.y],
-                [uv.x, uv.y]
-            ]
+            '''
+            [pos.x, -pos.z, pos.y],
+            [normal.x, -normal.z, normal.y],
+            [uv.x, uv.y]
+            '''
+            vdata = []
+
+            # grab vertex data (only when needed)
+            # ALL VERTEX DATA NEED TO BE ROTATED 90deg
+            # ALONG X AXIS. JUST SWAP Y <-> Z
+            # position
+            if format & VTF_POS:
+                pos = verts[vtx.vertex_index].co
+                vdata.append([pos.x, pos.z, -pos.y])
+
+            # normal
+            if format & VTF_NORMAL:
+                normal = vtx.normal
+                vdata.append([normal.x, normal.z, -normal.y])
+
+            # uv0
+            if format & VTF_UV0:
+                uv = uv0_data[loop_id].uv
+                vdata.append([uv.x, uv.y])
+
+            # tangent + bitangent
+            if format & VTF_TANGENT_BITANGENT:
+                tangent = vtx.tangent
+                bitangent = vtx.bitangent
+                vdata.append([
+                    tangent.x, tangent.z, -tangent.y,
+                    bitangent.x, bitangent.z, -bitangent.y
+                ])
+
+            # uv1
+            if format & VTF_UV1 and uv1_data != None:
+                uv = uv1_data[loop_id].uv
+                vdata.append([uv.x, uv.y])
             
-            # add if no vertex found
+            # add if no vertex found, add as new
+            # otherwise, this vertex is not unique
             if vdata not in unique_verts:
                 unique_verts.append(vdata)
                 
@@ -147,15 +184,46 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
     print("BCF_BUFFERS_BUILT\n")
     return (unique_verts, submeshes_data)
 
-
-# do the writing (easy)
-def write_some_data(context, filepath, vtx_format, me):
-    print("BCF_EXPORT_STARTED...\n")
-
+# preparation step
+def can_write(context, vtx_format, me):
+    print("CHECKING IF CONTEXT MAKES SENSE...\n")
+    
     # check some requirements...
+    # make sure an object is selected
     if (len(context.selected_objects) == 0):
         print("NO OBJECT SELECTED. BAIL....")
         me.report({'ERROR'}, 'NO OBJECT SELECTED!')
+        return False
+    
+    # make sure it's a mesh object
+    obj = context.selected_objects[0]
+    m = obj.data
+
+    if type(m) != bpy.types.Mesh:
+        print("OBJECT DATA IS NOT MESH!")
+        me.report({'ERROR'}, "SELECTED OBJECT '%s' IS NOT A MESH" % obj.name)
+        return False
+
+    # make sure it has at least 1 uv map
+    if (len(m.uv_layers) < 1):
+        print("NO UV MAP FOUND!")
+        me.report({'ERROR'}, "AT LEAST 1 UV MAP MUST BE CREATED!")
+        return False
+
+    # if uv1 is specified, make sure it has 2 uv maps
+    if (vtx_format & VTF_UV1) and len(m.uv_layers) < 2:
+        print("CANNOT FIND SECOND UV MAP!! MAYBE EXPORT WITH UV0 only!")
+        me.report({'ERROR'}, "UV1 WAS REQUESTED BUT THERE WAS ONLY 1 UV MAP!")
+        return False
+
+    return True
+
+# do the writing (easy)
+def do_write(context, filepath, vtx_format, me, mode="ascii"):
+    print("BCF_EXPORT_STARTED...\n")
+
+    # check some requirements...
+    if not can_write(context, vtx_format, me):
         return {'CANCELLED'}
     
     # grab object
@@ -163,24 +231,52 @@ def write_some_data(context, filepath, vtx_format, me):
 
     # process the object
     print("BCF_VERTEX_FORMAT: %d\n" % vtx_format)
-    vb, ibs = buildBuffers(obj, report=me.report)
+    vb, ibs = buildBuffers(obj, report=me.report,format=vtx_format)
+
+    # write to ascii for now (changeable later)
+    total_tris = write_to_ascii(filepath, vb, ibs, vtx_format, obj.name)
+
+    me.report({'INFO'}, "Done writing shits: %d unique vertices and %d submeshes, totaling %d tris " % (len(vb), len(ibs), total_tris))
+
+    return {'FINISHED'}
+
+def write_to_ascii(filepath, vb, ibs, vtx_format, objname):
 
     # now write the data
     print("BCF_WRITING_TO_FILE: (%s)...\n" % filepath)
     f = open(filepath, 'w', encoding='utf-8')
-    f.write("vtx_format %d\n" % vtx_format)
-    f.write("object: %s\n" % obj.name)
+    f.write("vtx_format: %d\n" % vtx_format)
+    f.write("object: %s\n" % objname)
 
     # write vertex count and data
     print("BCF_WRITING_VERTEX_DATA...\n")
     f.write("vertex_count: %d\n" % len(vb))
     for v_idx, v in enumerate(vb):
-        f.write("%d: %.4f %.4f %.4f \t%.4f %.4f %.4f\t%.4f %.4f\n" % (
-            v_idx,
-            v[0][0], v[0][1], v[0][2],
-            v[1][0], v[1][1], v[1][2],
-            v[2][0], v[2][1]
-        ))
+        # print id
+        f.write("%d:" % v_idx)
+        # conditional write here....
+        i = 0   # track the data pointer
+        if vtx_format & VTF_POS: 
+            f.write("\tv(%.4f %.4f %.4f)" % (v[i][0], v[i][1], v[i][2]))
+            i+=1
+
+        if vtx_format & VTF_NORMAL: 
+            f.write("\tn(%.4f %.4f %.4f)" % (v[i][0], v[i][1], v[i][2]))
+            i+=1
+
+        if vtx_format & VTF_UV0: 
+            f.write("\tu0(%.4f %.4f)" % (v[i][0], v[i][1]))
+            i+=1
+
+        if vtx_format & VTF_TANGENT_BITANGENT: 
+            f.write("\ttb(%.4f %.4f %.4f %.4f %.4f %.4f)" % (v[i][0], v[i][1], v[i][2], v[i][3], v[i][4], v[i][5]))
+            i+=1
+
+        if vtx_format & VTF_UV1: 
+            f.write("\tu1(%.4f %.4f)" % (v[i][0], v[i][1]))
+            i+=1
+
+        f.write("\n")
     print("DONE.\n")
 
     # write index data
@@ -195,13 +291,12 @@ def write_some_data(context, filepath, vtx_format, me):
         for t_idx, t in enumerate(ib['data']):
             f.write("%d: %d %d %d\n" % (t_idx, t[0], t[1], t[2]))
     
+    f.flush()
     f.close()
     print("DONE.\n")
 
-    me.report({'INFO'}, "Done writing shits: %d unique vertices and %d submeshes, totaling %d tris " % (len(vb), len(ibs), total_tris))
-
-    return {'FINISHED'}
-
+    # return length of vb, num of submeshes, and total tris
+    return total_tris
 
 # ExportHelper is a helper class, defines filename and
 # invoke() function which calls the file selector.
@@ -234,23 +329,6 @@ class BCFExporter(Operator, ExportHelper):
     vertex_has_bone: BoolProperty(name="Bone Weights+IDs", description="Bone Weights + ID for skeletal animation", default=(VTF_DEFAULT & VTF_BONE_DATA)!=0)
     vertex_has_tween: BoolProperty(name="Tween", description="XYZ vertex animation data", default=(VTF_DEFAULT & VTF_TWEEN)!=0)
 
-    # # List of operator properties, the attributes will be assigned
-    # # to the class instance from the operator settings before calling.
-    # use_setting: BoolProperty(
-    #     name="Example Boolean",
-    #     description="Example Tooltip",
-    #     default=True,
-    # )
-    # type: EnumProperty(
-    #     name="Animation Data",
-    #     description="Store animation (bone weights+id) data?",
-    #     items=(
-    #         ('OPT_NO_ANIM', "Without Animation data", "No Vertex weights info"),
-    #         ('OPT_WITH_ANIM', "With Animation data", "With vertex weights"),
-    #     ),
-    #     default='OPT_NO_ANIM',
-    # )
-
     def execute(self, context):
         # build a vertex format before executing
         format = 0
@@ -264,7 +342,7 @@ class BCFExporter(Operator, ExportHelper):
         if self.vertex_has_tween: format |= VTF_TWEEN
 
 
-        return write_some_data(context, self.filepath, format, self)
+        return do_write(context, self.filepath, format, self)
 
 
 # Only needed if you want to add into a dynamic menu
