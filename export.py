@@ -80,12 +80,25 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
         print("BCF_DISCOVERED: UV1Coords(%d)\n" % len(uv1_data))
     else:
         print("BCF_DISCOVERED: No UV1Coords available\n")
+
+    # submeshes = materials
+    submeshes_count = len(m.materials)
+    print("BCF_SUBMESHES_COUNT: %d" % submeshes_count)
+
     
     # empty list, fill later
     unique_verts = []
     
     # real triangle data (optimized)
-    real_tris = []
+    # real_tris = []
+    # allocate submeshes data
+    submeshes_data = []
+    material_names = []
+    for i in range(submeshes_count):
+        submeshes_data.append({
+            "material": m.materials[i].name,
+            "data": []
+        })
     
     # for each triangle
     print("BCF_START_PROCESSING_TRIANGLES...\n")
@@ -127,10 +140,12 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
             triangle.append(unique_v_idx)
         
         # append real tris data
-        real_tris.append(triangle)
+        # real_tris.append(triangle)
+        # append to appropriate submeshes?
+        submeshes_data[t.material_index]['data'].append(triangle)
 
     print("BCF_BUFFERS_BUILT\n")
-    return (unique_verts, real_tris)
+    return (unique_verts, submeshes_data)
 
 
 # do the writing (easy)
@@ -148,7 +163,7 @@ def write_some_data(context, filepath, vtx_format, me):
 
     # process the object
     print("BCF_VERTEX_FORMAT: %d\n" % vtx_format)
-    vb, ib = buildBuffers(obj, report=me.report)
+    vb, ibs = buildBuffers(obj, report=me.report)
 
     # now write the data
     print("BCF_WRITING_TO_FILE: (%s)...\n" % filepath)
@@ -170,16 +185,20 @@ def write_some_data(context, filepath, vtx_format, me):
 
     # write index data
     print("BCF_WRITING_TRIANGLE_DATA...\n")
-    f.write("triangle_count: %d\n" % len(ib))
-    for t_idx, t in enumerate(ib):
-        f.write("%d: %d %d %d\n" % (
-            t_idx, t[0], t[1], t[2]
-        ))
-
+    f.write("submeshes_count: %d\n" % len(ibs))
+    # for each submeshes
+    total_tris = 0
+    for ib in ibs:
+        f.write("material: %s\n" % ib['material'])
+        f.write("triangle_count: %d\n" % len(ib['data']))
+        total_tris += len(ib['data'])
+        for t_idx, t in enumerate(ib['data']):
+            f.write("%d: %d %d %d\n" % (t_idx, t[0], t[1], t[2]))
+    
     f.close()
     print("DONE.\n")
 
-    me.report({'INFO'}, "Done writing shits: %d unique vertices and %d triangles " % (len(vb), len(ib)))
+    me.report({'INFO'}, "Done writing shits: %d unique vertices and %d submeshes, totaling %d tris " % (len(vb), len(ibs), total_tris))
 
     return {'FINISHED'}
 
