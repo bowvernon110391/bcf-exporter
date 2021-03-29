@@ -255,9 +255,19 @@ def do_write(context, filepath, vtx_format, me, mode="ascii"):
 # 4b : vertex_buffer_size_in_bytes
 # 2b : sub_mesh_count
 # 32b: objname
+# 2b : total_tris
+# --SUB_MESH_DATA_---
+# { 32b: material_name, 2b: begin_at, 2b: total_tri }
 # { vertex_buffer }
-# { 32b: material_name, 2b: tri_count, 6b: tri_idx[3] } * sub_mesh_count
+# { index_buffer }
 def write_to_binary(filepath, vb, ibs, vtx_format, objname):
+    # preprocess indices data first
+    total_tris = 0
+    for ib in ibs:
+        ib['begin_at'] = total_tris
+        ib['total_elem'] = len(ib['data'])
+        total_tris += ib['total_elem']
+
     print("BCF_BINARY_WRITE: (%s)...\n" % filepath)
     vertex_size = bytesPerVertex(vtx_format)
 
@@ -270,7 +280,6 @@ def write_to_binary(filepath, vb, ibs, vtx_format, objname):
     print("BCF_WRITE_HEADER...\n")
     buf = make_buffer('B',[ vtx_format, vertex_size ])
     f.write(buf)
-
     
     # 2b : vertex_count (max 65535 vertex)
     # 4b : vertex_buffer_size_in_bytes
@@ -306,6 +315,28 @@ def write_to_binary(filepath, vb, ibs, vtx_format, objname):
     padded_buf = buf.ljust(32, b'\0')
     f.write(padded_buf)
 
+    # 2b: total_tris
+    print("total_tris: %d\n" % total_tris)
+    buf = make_buffer('H', [total_tris])
+    f.write(buf)
+
+    # SUBMESH_DATA
+    for ib in ibs:
+        print("writing mesh(%s, begin: %d, total: %d)\n" % (ib['material'], ib['begin_at'], ib['total_elem']))
+
+        # 32b: material_name
+        buf = bytearray(ib['material'], 'utf-8')
+        padded_buf = buf.ljust(32, b'\0')
+        f.write(padded_buf)
+
+        # 2b: begin_at
+        buf = make_buffer('H', [ib['begin_at']])
+        f.write(buf)
+        
+        # 2b: total_elem
+        buf = make_buffer('H', [ib['total_elem']])
+        f.write(buf)
+
     # VERTEX_BUFFER
     print("writing vertex buffer...\n")
     for v_idx, v in enumerate(vb):
@@ -340,24 +371,12 @@ def write_to_binary(filepath, vb, ibs, vtx_format, objname):
             f.write(buf)
             i+=1
 
-    # SUBMESH DATA { material_name, triangle_count, [triangle_indices] }
-    total_tris = 0
+    
+    # WRITE ALL INDICES
     # for each submesh
     for ib in ibs:
-        # 32b: mat_name
-        buf = bytearray(ib['material'], 'utf-8')
-        padded_buf = buf.ljust(32, b'\0')
-        f.write(padded_buf)
-        # 2b: triangle_count
-        buf = make_buffer('H', [len(ib['data'])])
-        f.write(buf)
-        # 6b: tri_idx[3] * triangle_count
         for t in ib['data']:
-            buf = make_buffer('H', t)
-            f.write(buf)
-        
-        # update total_tris
-        total_tris += len(ib['data'])
+            f.write(make_buffer('H', t))
 
     f.close()
 
