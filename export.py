@@ -233,12 +233,135 @@ def do_write(context, filepath, vtx_format, me, mode="ascii"):
     print("BCF_VERTEX_FORMAT: %d\n" % vtx_format)
     vb, ibs = buildBuffers(obj, report=me.report,format=vtx_format)
 
-    # write to ascii for now (changeable later)
-    total_tris = write_to_ascii(filepath, vb, ibs, vtx_format, obj.name)
+    if mode == 'ascii':
+        # write to ascii for now (changeable later)
+        total_tris = write_to_ascii(filepath, vb, ibs, vtx_format, obj.name)
+    elif mode == 'binary':
+        total_tris = write_to_binary(filepath, vb, ibs, vtx_format, obj.name)
+    else:
+        # error happens
+        me.report({'INFO'}, "UNKNOWN WRITE TYPE '%s'" % mode)
+        return {'CANCELLED'}
 
     me.report({'INFO'}, "Done writing shits: %d unique vertices and %d submeshes, totaling %d tris " % (len(vb), len(ibs), total_tris))
 
     return {'FINISHED'}
+
+# write_to_binary, write binary file
+# FORMAT IS AS FOLLOWS:
+# 1b : vtx_format
+# 1b : bytes_per_vertex
+# 2b : vertex_count (max 65535 vertex)
+# 4b : vertex_buffer_size_in_bytes
+# 2b : sub_mesh_count
+# 32b: objname
+# { vertex_buffer }
+# { 32b: material_name, 2b: tri_count, 6b: tri_idx[3] } * sub_mesh_count
+def write_to_binary(filepath, vb, ibs, vtx_format, objname):
+    print("BCF_BINARY_WRITE: (%s)...\n" % filepath)
+    vertex_size = bytesPerVertex(vtx_format)
+
+    print("format: %d, bytes per vertex: %d\n" % (vtx_format, vertex_size) )
+    f = open(filepath, 'wb')
+
+    # write vtx format and bytes per vertex
+    # 1b : vtx_format
+    # 1b : bytes_per_vertex
+    print("BCF_WRITE_HEADER...\n")
+    buf = make_buffer('B',[ vtx_format, vertex_size ])
+    f.write(buf)
+
+    
+    # 2b : vertex_count (max 65535 vertex)
+    # 4b : vertex_buffer_size_in_bytes
+    vertex_count = len(vb)
+    '''
+    'b'         signed integer     1
+    'B'         unsigned integer   1
+    'u'         Unicode character  2 (see note)
+    'h'         signed integer     2
+    'H'         unsigned integer   2
+    'i'         signed integer     2
+    'I'         unsigned integer   2
+    'l'         signed integer     4
+    'L'         unsigned integer   4
+    'q'         signed integer     8 (see note)
+    'Q'         unsigned integer   8 (see note)
+    'f'         floating point     4
+    'd'         floating point     8
+    '''
+    f.write(make_buffer('H', [vertex_count]))
+    vertex_buffer_size_in_bytes = vertex_count * vertex_size
+    print("vertex_count: %d, vertex_buffer_size_in_bytes: %d\n" % ( vertex_count, vertex_buffer_size_in_bytes ))
+    f.write(make_buffer('L', [vertex_buffer_size_in_bytes]))
+
+    # 2b : sub_mesh_count
+    submesh_count = len(ibs)
+    print("submesh_count: %d\n" % submesh_count)
+    f.write(make_buffer('H', [submesh_count]))
+
+    # 32b: objname
+    print("objname: %s\n" % objname)
+    buf = bytearray(objname, 'utf-8')
+    padded_buf = buf.ljust(32, b'\0')
+    f.write(padded_buf)
+
+    # VERTEX_BUFFER
+    print("writing vertex buffer...\n")
+    for v_idx, v in enumerate(vb):
+        i = 0   # track data pointer
+        # write position if there is
+        if vtx_format & VTF_POS:
+            buf = make_buffer('f', v[i])
+            f.write(buf)
+            i+=1
+
+        # write normal
+        if vtx_format & VTF_NORMAL:
+            buf = make_buffer('f', v[i])
+            f.write(buf)
+            i+=1
+
+        # write uv0
+        if vtx_format & VTF_UV0:
+            buf = make_buffer('f', v[i])
+            f.write(buf)
+            i+=1
+
+        # write tangent + bitangent
+        if vtx_format & VTF_TANGENT_BITANGENT:
+            buf = make_buffer('f', v[i])
+            f.write(buf)
+            i+=1
+
+        # write uv1
+        if vtx_format & VTF_UV1:
+            buf = make_buffer('f', v[i])
+            f.write(buf)
+            i+=1
+
+    # SUBMESH DATA { material_name, triangle_count, [triangle_indices] }
+    total_tris = 0
+    # for each submesh
+    for ib in ibs:
+        # 32b: mat_name
+        buf = bytearray(ib['material'], 'utf-8')
+        padded_buf = buf.ljust(32, b'\0')
+        f.write(padded_buf)
+        # 2b: triangle_count
+        buf = make_buffer('H', [len(ib['data'])])
+        f.write(buf)
+        # 6b: tri_idx[3] * triangle_count
+        for t in ib['data']:
+            buf = make_buffer('H', t)
+            f.write(buf)
+        
+        # update total_tris
+        total_tris += len(ib['data'])
+
+    f.close()
+
+    return total_tris
 
 def write_to_ascii(filepath, vb, ibs, vtx_format, objname):
 
@@ -311,10 +434,10 @@ class BCFExporter(Operator, ExportHelper):
     bl_label = "EXPORT BCF!"
 
     # ExportHelper mixin class uses this
-    filename_ext = ".txt"
+    filename_ext = ".bcf"
 
     filter_glob: StringProperty(
-        default="*.txt",
+        default="*.bcf",
         options={'HIDDEN'},
         maxlen=255,  # Max internal buffer length, longer would be clamped.
     )
@@ -329,6 +452,16 @@ class BCFExporter(Operator, ExportHelper):
     vertex_has_bone: BoolProperty(name="Bone Weights+IDs", description="Bone Weights + ID for skeletal animation", default=(VTF_DEFAULT & VTF_BONE_DATA)!=0)
     vertex_has_tween: BoolProperty(name="Tween", description="XYZ vertex animation data", default=(VTF_DEFAULT & VTF_TWEEN)!=0)
 
+    write_mode: EnumProperty(
+        items=(
+            ('ascii', "ASCII", "Human readable format"),
+            ('binary', "Binary", "Compact memory size")
+        ),
+        name="File Type",
+        description="What kind of file output to write",
+        default='ascii'
+    )
+
     def execute(self, context):
         # build a vertex format before executing
         format = 0
@@ -342,7 +475,7 @@ class BCFExporter(Operator, ExportHelper):
         if self.vertex_has_tween: format |= VTF_TWEEN
 
 
-        return do_write(context, self.filepath, format, self)
+        return do_write(context, self.filepath, format, self, self.write_mode)
 
 
 # Only needed if you want to add into a dynamic menu
