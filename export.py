@@ -114,8 +114,8 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
         triangle = [] # only list of verts
         
         # let's loop over indices in this triangle
-        # REVISED (reverse order, cause blender's front is CW)
-        for i in range(2, -1, -1):
+        # REVISED (NOPE, BLENDER IS ALREADY FRONT = CCW)
+        for i in range(3):
             # get loop id
             loop_id = t.loops[i]
             # get loop data
