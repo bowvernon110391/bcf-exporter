@@ -2,6 +2,17 @@ import bpy
 import array
 import sys
 
+bl_info = {
+    "name": "Bowie Custom Format Exporter",
+    "author": "Bowie",
+    "blender": (2, 83, 0),
+    "version": (0, 0, 1),
+    "location": "File > Import-Export",
+    "description": "Export BCF File",
+    "category": "Import-Export"
+}
+
+
 """
 Author: Bowie
 This exporter defines a pretty basic export for
