@@ -553,4 +553,4 @@ if __name__ == "__main__":
     register()
 
     # test call
-    bpy.ops.bcf_exporter.export('INVOKE_DEFAULT')
+    # bpy.ops.bcf_exporter.export('INVOKE_DEFAULT')
