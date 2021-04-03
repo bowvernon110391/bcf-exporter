@@ -51,7 +51,7 @@ def bytesPerVertex(vtx_format):
 
 ###
 # buildBuffers: return tuple of vb and ib
-def buildBuffers(obj, report=None, format=VTF_DEFAULT):
+def buildBuffers(obj, report=None, format=VTF_DEFAULT, bounding=None):
     
     # mesh
     m = obj.data
@@ -97,6 +97,9 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
     
     # empty list, fill later
     unique_verts = []
+
+    # bounding box
+    boundingSet = False
     
     # real triangle data (optimized)
     # real_tris = []
@@ -137,9 +140,33 @@ def buildBuffers(obj, report=None, format=VTF_DEFAULT):
             # ALL VERTEX DATA NEED TO BE ROTATED 90deg
             # ALONG X AXIS. JUST SWAP Y <-> Z
             # position
+            rawPos = verts[vtx.vertex_index].co
+            pos = [rawPos.x, rawPos.z, -rawPos.y]
+
+            # update bounding if provided
+            if bounding:
+                # ALONG X AXIS
+                if pos[0] < bounding[0] or not boundingSet:
+                    bounding[0] = pos[0]
+                if pos[0] > bounding[3] or not boundingSet:
+                    bounding[3] = pos[0]
+                # ALONG Y AXIS
+                if pos[1] < bounding[1] or not boundingSet:
+                    bounding[1] = pos[1]
+                if pos[1] > bounding[4] or not boundingSet:
+                    bounding[4] = pos[1]
+                # ALONG Z AXIS
+                if pos[2] < bounding[2] or not boundingSet:
+                    bounding[2] = pos[2]
+                if pos[2] > bounding[5] or not boundingSet:
+                    bounding[5] = pos[2]
+
+                boundingSet = True
+
+            # position, use above data
             if format & VTF_POS:
-                pos = verts[vtx.vertex_index].co
-                vdata.append([pos.x, pos.z, -pos.y])
+                # pos = verts[vtx.vertex_index].co
+                vdata.append(pos)
 
             # normal
             if format & VTF_NORMAL:
@@ -231,13 +258,16 @@ def do_write(context, filepath, vtx_format, me, mode="ascii"):
 
     # process the object
     print("BCF_VERTEX_FORMAT: %d\n" % vtx_format)
-    vb, ibs = buildBuffers(obj, report=me.report,format=vtx_format)
+    boundingData = [0,0,0,0,0,0]
+    vb, ibs = buildBuffers(obj, report=me.report,format=vtx_format, bounding=boundingData)
+
+    print("AABB: min(%.4f, %.4f, %.4f) max(%.4f, %.4f, %.4f)\n" % (boundingData[0], boundingData[1], boundingData[2], boundingData[3], boundingData[4], boundingData[5]) )
 
     if mode == 'ascii':
         # write to ascii for now (changeable later)
-        total_tris = write_to_ascii(filepath, vb, ibs, vtx_format, obj.name)
+        total_tris = write_to_ascii(filepath, vb, ibs, vtx_format, obj.name, boundingData)
     elif mode == 'binary':
-        total_tris = write_to_binary(filepath, vb, ibs, vtx_format, obj.name)
+        total_tris = write_to_binary(filepath, vb, ibs, vtx_format, obj.name, boundingData)
     else:
         # error happens
         me.report({'INFO'}, "UNKNOWN WRITE TYPE '%s'" % mode)
@@ -256,11 +286,12 @@ def do_write(context, filepath, vtx_format, me, mode="ascii"):
 # 2b : sub_mesh_count
 # 32b: objname
 # 2b : total_tris
+# 24b: bounding_box (min: 3 float, max: 3 float)
 # --SUB_MESH_DATA_---
 # { 32b: material_name, 2b: begin_at, 2b: total_tri }
 # { vertex_buffer }
 # { index_buffer }
-def write_to_binary(filepath, vb, ibs, vtx_format, objname):
+def write_to_binary(filepath, vb, ibs, vtx_format, objname, bounding):
     # preprocess indices data first
     total_tris = 0
     for ib in ibs:
@@ -318,6 +349,11 @@ def write_to_binary(filepath, vb, ibs, vtx_format, objname):
     # 2b: total_tris
     print("total_tris: %d\n" % total_tris)
     buf = make_buffer('H', [total_tris])
+    f.write(buf)
+
+    # 24b: bounding_box
+    print("bounding_box: %.4f %.4f %.4f %.4f %.4f %.4f\n" % (bounding[0], bounding[1], bounding[2], bounding[3], bounding[4], bounding[5]))
+    buf = make_buffer('f', bounding)
     f.write(buf)
 
     # SUBMESH_DATA
@@ -382,7 +418,7 @@ def write_to_binary(filepath, vb, ibs, vtx_format, objname):
 
     return total_tris
 
-def write_to_ascii(filepath, vb, ibs, vtx_format, objname):
+def write_to_ascii(filepath, vb, ibs, vtx_format, objname, bounding):
 
     # now write the data
     print("BCF_WRITING_TO_FILE: (%s)...\n" % filepath)
@@ -393,6 +429,7 @@ def write_to_ascii(filepath, vb, ibs, vtx_format, objname):
     # write vertex count and data
     print("BCF_WRITING_VERTEX_DATA...\n")
     f.write("vertex_count: %d\n" % len(vb))
+    f.write("bounding_box: %.4f %.4f %.4f %.4f %.4f %.4f\n" % (bounding[0], bounding[1], bounding[2], bounding[3], bounding[4], bounding[5]))
     for v_idx, v in enumerate(vb):
         # print id
         f.write("%d:" % v_idx)
