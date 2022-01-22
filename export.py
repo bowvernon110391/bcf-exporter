@@ -344,7 +344,7 @@ def write_to_binary(filepath, vb, ibs, vtx_format, objname, bounding):
     f.write(make_buffer('H', [vertex_count]))
     vertex_buffer_size_in_bytes = vertex_count * vertex_size
     print("vertex_count: %d, vertex_buffer_size_in_bytes: %d\n" % ( vertex_count, vertex_buffer_size_in_bytes ))
-    f.write(make_buffer('L', [vertex_buffer_size_in_bytes]))
+    f.write(make_buffer('I', [vertex_buffer_size_in_bytes]))
 
     # 2b : sub_mesh_count
     submesh_count = len(ibs)
